@@ -1,0 +1,54 @@
+#4. Description: One mongos stopped, then restarted
+#                    (mo step) serverA stopped
+#                    * Op succeeds
+#                    (mo step) serverA restarted
+#                    * Op succeeds
+
+description: "Successful read from restarted mongos"
+
+type: "Sharded"
+
+initConfig: { id: "integration_tests",
+              routers: [
+                         { server_id: "mongosA"},
+                         { server_id: "mongosB" }
+                       ]
+            }
+
+clientSetUp: {
+                hosts: [ "mongosA", "mongosB" ],
+                options: {
+                           heartbeatFrequency: 1
+                         }
+             }
+
+
+phases: [
+          {
+            MOOperation: { method: "POST",
+                           uri: "/servers/mongosA",
+                           payload: { action: "stop" }
+                         }
+          },
+
+          {
+            clientOperation: { operation: "findOne",
+                               outcome: { ok: 0 }
+                             }
+          },
+
+          {
+            MOOperation: { method: "POST",
+                           uri: "/servers/mongosA",
+                           payload: { action: "restart" }
+                         }
+          }
+        ]
+
+tests: [
+          {
+            clientOperation: { operation: "findOne",
+                               outcome: { ok: 1 }
+                             }
+          }
+        ]
