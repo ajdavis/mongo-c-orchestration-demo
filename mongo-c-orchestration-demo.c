@@ -1,33 +1,56 @@
-/* gcc example.c -o example $(pkg-config --cflags --libs libmongoc-1.0) */
-
-/* ./example-client [CONNECTION_STRING [COLLECTION_NAME]] */
+/* ./mongo-c-orchestration-demo [CONNECTION_STRING] */
 
 #include <mongoc.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+
+bool
+json_command (mongoc_database_t *database,
+              const char        *json)
+{
+   bson_t command;
+   bson_t reply;
+   bson_error_t error;
+   char *str;
+
+   if (!bson_init_from_json (&command, json, -1, &error)) {
+      fprintf (stderr, "JSON parse error: %s\n", error.message);
+      return false;
+   }
+
+   str = bson_as_json (&command, NULL);
+   fprintf (stdout, "%s -->\n\n", str);
+
+   bson_init (&reply);
+
+   if (!mongoc_database_command_simple (database, &command, NULL, &reply,
+                                        &error)) {
+      fprintf (stderr, "Command failure: %s\n\n", error.message);
+      return EXIT_FAILURE;
+   }
+
+   bson_free (str);
+   str = bson_as_json (&reply, NULL);
+   fprintf (stdout, "\t<-- %s\n\n", str);
+   bson_free (str);
+   bson_destroy (&command);
+   bson_destroy (&reply);
+   return true;
+}
 
 int
 main (int   argc,
       char *argv[])
 {
    mongoc_client_t *client;
-   mongoc_collection_t *collection;
-   mongoc_cursor_t *cursor;
-   bson_error_t error;
-   const bson_t *doc;
+   mongoc_database_t *database;
    const char *uristr = "mongodb://127.0.0.1/";
-   const char *collection_name = "test";
-   bson_t query;
-   char *str;
 
    mongoc_init ();
 
    if (argc > 1) {
       uristr = argv [1];
-   }
-
-   if (argc > 2) {
-      collection_name = argv [2];
    }
 
    client = mongoc_client_new (uristr);
@@ -37,36 +60,28 @@ main (int   argc,
       return EXIT_FAILURE;
    }
 
-   bson_init (&query);
+   database = mongoc_client_get_database (client, "test");
 
-#if 0
-   bson_append_utf8 (&query, "hello", -1, "world", -1);
-#endif
-
-   collection = mongoc_client_get_collection (client, "test", collection_name);
-   cursor = mongoc_collection_find (collection,
-                                    MONGOC_QUERY_NONE,
-                                    0,
-                                    0,
-                                    0,
-                                    &query,
-                                    NULL,  /* Fields, NULL for all. */
-                                    NULL); /* Read Prefs, NULL for default */
-
-   while (mongoc_cursor_next (cursor, &doc)) {
-      str = bson_as_json (doc, NULL);
-      fprintf (stdout, "%s\n", str);
-      bson_free (str);
-   }
-
-   if (mongoc_cursor_error (cursor, &error)) {
-      fprintf (stderr, "Cursor Failure: %s\n", error.message);
+   /* Debugging aid: in case a server wasn't cleaned up from a previous run. */
+   if (!json_command (database, "{\"delete\": \"/v1/servers/my_id\"}")) {
       return EXIT_FAILURE;
    }
 
-   bson_destroy (&query);
-   mongoc_cursor_destroy (cursor);
-   mongoc_collection_destroy (collection);
+   if (!json_command (database,
+                      "{\"post\": \"/servers\", "
+                      "\"body\": {"
+                      "\"name\": \"mongod\", "
+                      "\"preset\": \"basic.json\", "
+                      "\"id\": \"my_id\"}}"
+                      )) {
+      return EXIT_FAILURE;
+   }
+
+   if (!json_command (database, "{\"delete\": \"/v1/servers/my_id\"}")) {
+      return EXIT_FAILURE;
+   }
+
+   mongoc_database_destroy (database);
    mongoc_client_destroy (client);
 
    mongoc_cleanup ();
