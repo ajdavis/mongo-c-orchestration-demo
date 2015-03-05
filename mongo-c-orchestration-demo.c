@@ -10,38 +10,71 @@ const char *USAGE =
 
 bool
 run_command (mongoc_database_t *conduction,
-             bson_t            *command)
+             bson_t            *command,
+             bson_t            *reply)
 {
-   bson_t reply;
    bson_error_t error;
    char *str = NULL;
 
    str = bson_as_json (command, NULL);
-   fprintf (stdout, "%s -->\n\n", str);
-   fflush (stdout);
+   printf ("%s -->\n\n", str);
    bson_free (str);
    str = NULL;
 
    /* TODO: print reply even if error. */
-   if (!mongoc_database_command_simple (conduction, command, NULL, &reply,
+   if (!mongoc_database_command_simple (conduction, command, NULL, reply,
                                         &error)) {
       fprintf (stderr, "Conduction command failure: %s\n\n", error.message);
       fflush (stderr);
       goto fail;
    }
 
-   str = bson_as_json (&reply, NULL);
-   fprintf (stdout, "\t<-- %s\n\n", str);
+   str = bson_as_json (reply, NULL);
+   printf ("\t<-- %s\n\n", str);
    fflush (stdout);
    bson_free (str);
-   bson_destroy (&reply);
 
    return true;
 
 fail:
    bson_free (str);
-   bson_destroy (&reply);
    return false;
+}
+
+bool
+json_command (mongoc_database_t *database,
+              const char        *json)
+{
+   bson_t command;
+   bson_t reply;
+   bson_error_t error;
+   char *str;
+
+   if (!bson_init_from_json (&command, json, -1, &error)) {
+      fprintf (stderr, "JSON parse error: %s\n", error.message);
+      return false;
+   }
+
+   str = bson_as_json (&command, NULL);
+   printf ("%s -->\n\n", str);
+
+   /* TODO: factor with run_command */
+   bson_init (&reply);
+
+   if (!mongoc_database_command_simple (database, &command, NULL, &reply,
+                                        &error)) {
+      fprintf (stderr, "Command failure: %s\n\n", error.message);
+      return EXIT_FAILURE;
+   }
+
+   bson_free (str);
+   str = bson_as_json (&reply, NULL);
+   printf ("\t<-- %s\n\n", str);
+   fflush (stdout);
+   bson_free (str);
+   bson_destroy (&command);
+   bson_destroy (&reply);
+   return true;
 }
 
 bool
@@ -117,7 +150,8 @@ fail:
 
 bool
 topology_test_init_config (mongoc_database_t *conduction,
-                           bson_t            *test_spec)
+                           bson_t            *test_spec,
+                           bson_t            *init_config_reply)
 {
    bson_iter_t iter;
    bson_t init_config;
@@ -143,7 +177,7 @@ topology_test_init_config (mongoc_database_t *conduction,
    bson_append_utf8 (&command, "post", -1, "/v1/sharded_clusters", -1);
    bson_append_document (&command, "body", -1, &init_config);
 
-   if (!run_command (conduction, &command)) {
+   if (!run_command (conduction, &command, init_config_reply)) {
       goto fail;
    }
 
@@ -164,6 +198,7 @@ topology_test_destroy_config (mongoc_database_t *conduction,
    size_t path_length;
    char *path = NULL;
    bson_t command;
+   bson_t reply;
 
    /* TODO: factor with topology_test_init_config, or use find_dotted. */
    if (!(bson_iter_init_find_case (&iter, test_spec, "initConfig") &&
@@ -181,6 +216,7 @@ topology_test_destroy_config (mongoc_database_t *conduction,
 
    path_length = strlen (base_path) + strlen (config_id) + 1;
    path = malloc (sizeof (char) * path_length);
+
    if (!path) {
       fprintf (stderr, "Couldn't alloc string\n");
       goto fail;
@@ -196,7 +232,7 @@ topology_test_destroy_config (mongoc_database_t *conduction,
    bson_init (&command);
    bson_append_utf8 (&command, "delete", -1, path, -1);
 
-   if (!run_command (conduction, &command)) {
+   if (!run_command (conduction, &command, &reply)) {
       goto fail;
    }
 
@@ -209,15 +245,36 @@ fail:
    return false;
 }
 
+const char *
+topology_test_get_mongodb_uri (bson_t *config_reply)
+{
+   bson_iter_t iter;
+
+   /* TODO: print errors */
+   if (!bson_iter_init_find_case (&iter, config_reply, "mongodb_uri")) {
+      return NULL;
+   }
+
+   if (BSON_ITER_HOLDS_UTF8 (&iter)) {
+      return bson_iter_utf8 (&iter, NULL);
+   }
+
+   return NULL;
+}
+
 int
 main (int   argc,
       char *argv[])
 {
-   mongoc_client_t *conduction_client;
-   mongoc_database_t *conduction;
+   mongoc_client_t *conduction_client = NULL;
+   mongoc_database_t *conduction = NULL;
    const char *json_filename = NULL;
    bson_t test_spec;
-   const char *uristr = "mongodb://127.0.0.1/";
+   const char *conduction_uri = "mongodb://127.0.0.1/";
+   bson_t init_config_reply;
+   const char *mongodb_uri = NULL;
+   mongoc_client_t *client = NULL;
+   mongoc_collection_t *collection = NULL;
 
    mongoc_init ();
 
@@ -229,10 +286,10 @@ main (int   argc,
    json_filename = argv [1];
 
    if (argc > 2) {
-      uristr = argv [2];
+      conduction_uri = argv [2];
    }
 
-   conduction_client = mongoc_client_new (uristr);
+   conduction_client = mongoc_client_new (conduction_uri);
 
    if (!conduction_client) {
       fprintf (stderr, "Failed to parse URI.\n");
@@ -242,12 +299,32 @@ main (int   argc,
    conduction = mongoc_client_get_database (conduction_client, "test");
 
    bson_init (&test_spec);
+   bson_init (&init_config_reply);
 
    if (!(json_file_to_bson (json_filename, &test_spec)
          && topology_test_print_info (&test_spec)
-         && topology_test_init_config (conduction, &test_spec))) {
+         && topology_test_init_config (conduction, &test_spec,
+                                       &init_config_reply))) {
       return EXIT_FAILURE;
    }
+
+   if (!(mongodb_uri = topology_test_get_mongodb_uri (&init_config_reply))) {
+      fprintf (stderr, "Couldn't find mongodb_uri in Conduction reply\n");
+      return EXIT_FAILURE;
+   }
+
+   printf("mongodb_uri: %s\n", mongodb_uri);
+   client = mongoc_client_new (mongodb_uri);
+
+   /* TODO: read and execute phases */
+   json_command (conduction,
+                 "{ method: \"POST\", "
+                 "uri: \"/servers/mongosA\", "
+                 "payload: { action: \"stop\" }");
+
+   collection = mongoc_client_get_collection (client, "test", "test");
+   mongoc_collection_destroy (collection);
+   mongoc_client_destroy (client);
 
    if (!topology_test_destroy_config (conduction, &test_spec)) {
       return EXIT_FAILURE;
