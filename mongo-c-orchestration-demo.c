@@ -10,7 +10,7 @@ const char *USAGE =
 
 bool
 run_command (mongoc_database_t *conduction,
-             bson_t *command)
+             bson_t            *command)
 {
    bson_t reply;
    bson_error_t error;
@@ -18,16 +18,21 @@ run_command (mongoc_database_t *conduction,
 
    str = bson_as_json (command, NULL);
    fprintf (stdout, "%s -->\n\n", str);
+   fflush (stdout);
    bson_free (str);
+   str = NULL;
 
+   /* TODO: print reply even if error. */
    if (!mongoc_database_command_simple (conduction, command, NULL, &reply,
                                         &error)) {
       fprintf (stderr, "Conduction command failure: %s\n\n", error.message);
+      fflush (stderr);
       goto fail;
    }
 
    str = bson_as_json (&reply, NULL);
    fprintf (stdout, "\t<-- %s\n\n", str);
+   fflush (stdout);
    bson_free (str);
    bson_destroy (&reply);
 
@@ -127,20 +132,80 @@ topology_test_init_config (mongoc_database_t *conduction,
    }
 
    bson_iter_document (&iter, &length, &document);
+
    if (!bson_init_static (&init_config, document, length)) {
       fprintf (stderr, "couldn't parse initConfig\n");
       goto fail;
    }
 
    bson_init (&command);
-   bson_append_utf8 (&command, "post", -1, "/v1/replica_sets", -1);
+   /* TODO: choose /servers, replica_sets, or sharded_clusters */
+   bson_append_utf8 (&command, "post", -1, "/v1/sharded_clusters", -1);
    bson_append_document (&command, "body", -1, &init_config);
+
    if (!run_command (conduction, &command)) {
       goto fail;
    }
 
    return true;
 fail:
+   return false;
+}
+
+bool
+topology_test_destroy_config (mongoc_database_t *conduction,
+                              bson_t            *test_spec)
+{
+   bson_iter_t iter;
+   bson_iter_t init_config_iter;
+   /* TODO: choose /servers, /replica_sets, or /sharded_clusters */
+   const char *base_path = "/v1/sharded_clusters/";
+   const char *config_id;
+   size_t path_length;
+   char *path = NULL;
+   bson_t command;
+
+   /* TODO: factor with topology_test_init_config, or use find_dotted. */
+   if (!(bson_iter_init_find_case (&iter, test_spec, "initConfig") &&
+         BSON_ITER_HOLDS_DOCUMENT (&iter) &&
+         bson_iter_recurse (&iter, &init_config_iter))) {
+      fprintf (stderr, "missing initConfig\n");
+      goto fail;
+   }
+
+   if (!(bson_iter_find_case (&init_config_iter, "id") &&
+         (config_id = bson_iter_utf8 (&init_config_iter, NULL)))) {
+      fprintf (stderr, "couldn't parse config id from initConfig\n");
+      goto fail;
+   }
+
+   path_length = strlen (base_path) + strlen (config_id) + 1;
+   path = malloc (sizeof (char) * path_length);
+   if (!path) {
+      fprintf (stderr, "Couldn't alloc string\n");
+      goto fail;
+   }
+
+   /* Make a path like "/v1/replica_sets/my_id". */
+   if ((bson_snprintf (path, path_length, "%s%s", base_path,
+                       config_id) + 1) < path_length) {
+      fprintf (stderr, "internal error formatting config URL\n");
+      goto fail;
+   }
+
+   bson_init (&command);
+   bson_append_utf8 (&command, "delete", -1, path, -1);
+
+   if (!run_command (conduction, &command)) {
+      goto fail;
+   }
+
+   bson_destroy (&command);
+   free (path);
+   return true;
+fail:
+   bson_destroy (&command);
+   free (path);
    return false;
 }
 
@@ -181,6 +246,10 @@ main (int   argc,
    if (!(json_file_to_bson (json_filename, &test_spec)
          && topology_test_print_info (&test_spec)
          && topology_test_init_config (conduction, &test_spec))) {
+      return EXIT_FAILURE;
+   }
+
+   if (!topology_test_destroy_config (conduction, &test_spec)) {
       return EXIT_FAILURE;
    }
 
