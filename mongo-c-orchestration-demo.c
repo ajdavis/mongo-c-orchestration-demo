@@ -97,7 +97,7 @@ json_file_to_bson (const char *json_filename,
    buffer = bson_malloc (length);
 
    if (!buffer) {
-      fprintf (stderr, "could not alloc %zu bytes\n", length);
+      fprintf (stderr, "couldn't alloc %zu bytes\n", length);
       goto fail;
    }
 
@@ -148,6 +148,79 @@ fail:
    return false;
 }
 
+/*
+ * Return a string like "/v1/replica_sets" or NULL.
+ *
+ * Caller must free returned string.
+ */
+
+char *
+deployment_uri (const bson_t *test_spec,
+                bool          include_deployment_id)
+{
+   const char *base_path = "/v1";
+   bson_iter_t iter;
+   const char *type_str;
+   bson_iter_t deployment_iter;
+   const char *sep = "";
+   const char *deployment_id = "";
+   size_t path_length;
+   char *path = NULL;
+
+   if (!(bson_iter_init_find_case (&iter, test_spec, "type") &&
+         BSON_ITER_HOLDS_UTF8 (&iter) &&
+         (type_str = bson_iter_utf8 (&iter, NULL)))) {
+      fprintf (stderr, "missing \"type\"\n");
+      goto fail;
+   }
+
+   if (!strcmp (type_str, "Standalone")) {
+      type_str = "servers";
+   } else if (!strcmp (type_str, "Sharded")) {
+      type_str = "sharded_clusters";
+   } else if (!strcmp (type_str, "Standalone")) {
+      type_str = "replica_sets";
+   } else {
+      fprintf (stderr, "unrecognized type string: %s\n", type_str);
+      goto fail;
+   }
+
+   if (include_deployment_id) {
+      bson_iter_init (&iter, test_spec);
+
+      if (!(bson_iter_find_descendant (&iter, "initConfig.id",
+                                       &deployment_iter) &&
+            BSON_ITER_HOLDS_UTF8 (&deployment_iter) &&
+            (deployment_id = bson_iter_utf8 (&deployment_iter, NULL)))) {
+         fprintf (stderr, "missing initConfig.id");
+         goto fail;
+      }
+
+      sep = "/";
+   }
+
+   /* + 2: two slashes and a NULL terminator. */
+   path_length = strlen (base_path) + strlen (type_str) +
+                 + strlen(sep) + strlen (deployment_id) + 2;
+
+   if (!(path = malloc (sizeof (char) * path_length))) {
+      fprintf (stderr, "couldn't alloc string\n");
+      goto fail;
+   }
+
+   /* Make a path like "/v1/replica_sets/my_id". */
+   if ((bson_snprintf (path, path_length, "%s/%s%s%s", base_path, type_str,
+                       sep, deployment_id) + 1) < path_length) {
+      fprintf (stderr, "internal error formatting server type URL\n");
+      goto fail;
+   }
+
+   return path;
+fail:
+   free (path);
+   return NULL;
+}
+
 bool
 topology_test_init_config (mongoc_database_t *conduction,
                            bson_t            *test_spec,
@@ -158,6 +231,11 @@ topology_test_init_config (mongoc_database_t *conduction,
    uint32_t length = 0;
    const uint8_t *document = NULL;
    bson_t command;
+   char *path = NULL;
+
+   if (!(path = deployment_uri (test_spec, false))) {
+      goto fail;
+   }
 
    if (!(bson_iter_init_find_case (&iter, test_spec, "initConfig") &&
          BSON_ITER_HOLDS_DOCUMENT (&iter))) {
@@ -173,16 +251,17 @@ topology_test_init_config (mongoc_database_t *conduction,
    }
 
    bson_init (&command);
-   /* TODO: choose /servers, replica_sets, or sharded_clusters */
-   bson_append_utf8 (&command, "post", -1, "/v1/sharded_clusters", -1);
+   bson_append_utf8 (&command, "post", -1, path, -1);
    bson_append_document (&command, "body", -1, &init_config);
 
    if (!run_command (conduction, &command, init_config_reply)) {
       goto fail;
    }
 
+   free (path);
    return true;
 fail:
+   free (path);
    return false;
 }
 
@@ -190,42 +269,11 @@ bool
 topology_test_destroy_config (mongoc_database_t *conduction,
                               bson_t            *test_spec)
 {
-   bson_iter_t iter;
-   bson_iter_t init_config_iter;
-   /* TODO: choose /servers, /replica_sets, or /sharded_clusters */
-   const char *base_path = "/v1/sharded_clusters/";
-   const char *config_id;
-   size_t path_length;
-   char *path = NULL;
    bson_t command;
    bson_t reply;
+   char *path = NULL;
 
-   /* TODO: factor with topology_test_init_config, or use find_dotted. */
-   if (!(bson_iter_init_find_case (&iter, test_spec, "initConfig") &&
-         BSON_ITER_HOLDS_DOCUMENT (&iter) &&
-         bson_iter_recurse (&iter, &init_config_iter))) {
-      fprintf (stderr, "missing initConfig\n");
-      goto fail;
-   }
-
-   if (!(bson_iter_find_case (&init_config_iter, "id") &&
-         (config_id = bson_iter_utf8 (&init_config_iter, NULL)))) {
-      fprintf (stderr, "couldn't parse config id from initConfig\n");
-      goto fail;
-   }
-
-   path_length = strlen (base_path) + strlen (config_id) + 1;
-   path = malloc (sizeof (char) * path_length);
-
-   if (!path) {
-      fprintf (stderr, "Couldn't alloc string\n");
-      goto fail;
-   }
-
-   /* Make a path like "/v1/replica_sets/my_id". */
-   if ((bson_snprintf (path, path_length, "%s%s", base_path,
-                       config_id) + 1) < path_length) {
-      fprintf (stderr, "internal error formatting config URL\n");
+   if (!(path = deployment_uri (test_spec, true))) {
       goto fail;
    }
 
@@ -313,7 +361,7 @@ main (int   argc,
       return EXIT_FAILURE;
    }
 
-   printf("mongodb_uri: %s\n", mongodb_uri);
+   printf ("mongodb_uri: %s\n", mongodb_uri);
    client = mongoc_client_new (mongodb_uri);
 
    /* TODO: read and execute phases */
