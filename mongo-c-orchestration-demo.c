@@ -17,21 +17,19 @@ run_command (mongoc_database_t *conduction,
    char *str = NULL;
 
    str = bson_as_json (command, NULL);
-   printf ("%s -->\n\n", str);
+   MONGOC_INFO ("%s -->\n\n", str);
    bson_free (str);
    str = NULL;
 
    /* TODO: print reply even if error. */
    if (!mongoc_database_command_simple (conduction, command, NULL, reply,
                                         &error)) {
-      fprintf (stderr, "Conduction command failure: %s\n\n", error.message);
-      fflush (stderr);
+      MONGOC_ERROR ("Conduction command failure: %s\n\n", error.message);
       goto fail;
    }
 
    str = bson_as_json (reply, NULL);
-   printf ("\t<-- %s\n\n", str);
-   fflush (stdout);
+   MONGOC_INFO ("\t<-- %s\n\n", str);
    bson_free (str);
 
    return true;
@@ -51,26 +49,25 @@ json_command (mongoc_database_t *database,
    char *str;
 
    if (!bson_init_from_json (&command, json, -1, &error)) {
-      fprintf (stderr, "JSON parse error: %s\n", error.message);
+      MONGOC_ERROR ("JSON parse error: %s\n", error.message);
       return false;
    }
 
    str = bson_as_json (&command, NULL);
-   printf ("%s -->\n\n", str);
+   MONGOC_INFO ("%s -->\n\n", str);
 
    /* TODO: factor with run_command */
    bson_init (&reply);
 
    if (!mongoc_database_command_simple (database, &command, NULL, &reply,
                                         &error)) {
-      fprintf (stderr, "Command failure: %s\n\n", error.message);
+      MONGOC_ERROR ("Command failure: %s\n\n", error.message);
       return EXIT_FAILURE;
    }
 
    bson_free (str);
    str = bson_as_json (&reply, NULL);
-   printf ("\t<-- %s\n\n", str);
-   fflush (stdout);
+   MONGOC_INFO ("\t<-- %s\n\n", str);
    bson_free (str);
    bson_destroy (&command);
    bson_destroy (&reply);
@@ -97,7 +94,7 @@ json_file_to_bson (const char *json_filename,
    buffer = bson_malloc (length);
 
    if (!buffer) {
-      fprintf (stderr, "couldn't alloc %zu bytes\n", length);
+      MONGOC_ERROR ("couldn't alloc %zu bytes\n", length);
       goto fail;
    }
 
@@ -107,7 +104,7 @@ json_file_to_bson (const char *json_filename,
    }
 
    if (!bson_init_from_json (bson, buffer, length, &error)) {
-      fprintf (stderr, "%s: %s\n", json_filename, error.message);
+      MONGOC_ERROR ("%s: %s\n", json_filename, error.message);
       goto fail;
    }
 
@@ -133,7 +130,7 @@ topology_test_print_info (bson_t *test_spec)
       goto fail;
    }
 
-   printf ("description: %s\n", str);
+   MONGOC_INFO ("description: %s\n", str);
 
    if (!(bson_iter_init_find_case (&iter, test_spec, "type") &&
          BSON_ITER_HOLDS_UTF8 (&iter) &&
@@ -141,7 +138,7 @@ topology_test_print_info (bson_t *test_spec)
       goto fail;
    }
 
-   printf ("type: %s\n", str);
+   MONGOC_INFO ("type: %s\n", str);
 
    return true;
 fail:
@@ -170,7 +167,7 @@ deployment_uri (const bson_t *test_spec,
    if (!(bson_iter_init_find_case (&iter, test_spec, "type") &&
          BSON_ITER_HOLDS_UTF8 (&iter) &&
          (type_str = bson_iter_utf8 (&iter, NULL)))) {
-      fprintf (stderr, "missing \"type\"\n");
+      MONGOC_ERROR ("missing \"type\"\n");
       goto fail;
    }
 
@@ -181,7 +178,7 @@ deployment_uri (const bson_t *test_spec,
    } else if (!strcmp (type_str, "Standalone")) {
       type_str = "replica_sets";
    } else {
-      fprintf (stderr, "unrecognized type string: %s\n", type_str);
+      MONGOC_ERROR ("unrecognized type string: %s\n", type_str);
       goto fail;
    }
 
@@ -192,7 +189,7 @@ deployment_uri (const bson_t *test_spec,
                                        &deployment_iter) &&
             BSON_ITER_HOLDS_UTF8 (&deployment_iter) &&
             (deployment_id = bson_iter_utf8 (&deployment_iter, NULL)))) {
-         fprintf (stderr, "missing initConfig.id");
+         MONGOC_ERROR ("missing initConfig.id");
          goto fail;
       }
 
@@ -201,17 +198,17 @@ deployment_uri (const bson_t *test_spec,
 
    /* + 2: two slashes and a NULL terminator. */
    path_length = strlen (base_path) + strlen (type_str) +
-                 + strlen(sep) + strlen (deployment_id) + 2;
+                 +strlen (sep) + strlen (deployment_id) + 2;
 
    if (!(path = malloc (sizeof (char) * path_length))) {
-      fprintf (stderr, "couldn't alloc string\n");
+      MONGOC_ERROR ("couldn't alloc string\n");
       goto fail;
    }
 
    /* Make a path like "/v1/replica_sets/my_id". */
    if ((bson_snprintf (path, path_length, "%s/%s%s%s", base_path, type_str,
                        sep, deployment_id) + 1) < path_length) {
-      fprintf (stderr, "internal error formatting server type URL\n");
+      MONGOC_ERROR ("internal error formatting server type URL\n");
       goto fail;
    }
 
@@ -239,14 +236,14 @@ topology_test_init_config (mongoc_database_t *conduction,
 
    if (!(bson_iter_init_find_case (&iter, test_spec, "initConfig") &&
          BSON_ITER_HOLDS_DOCUMENT (&iter))) {
-      fprintf (stderr, "missing initConfig\n");
+      MONGOC_ERROR ("missing initConfig\n");
       goto fail;
    }
 
    bson_iter_document (&iter, &length, &document);
 
    if (!bson_init_static (&init_config, document, length)) {
-      fprintf (stderr, "couldn't parse initConfig\n");
+      MONGOC_ERROR ("couldn't parse initConfig\n");
       goto fail;
    }
 
@@ -327,7 +324,7 @@ main (int   argc,
    mongoc_init ();
 
    if (argc < 2) {
-      fprintf (stderr, "%s\n", USAGE);
+      MONGOC_ERROR ("%s\n", USAGE);
       return EXIT_FAILURE;
    }
 
@@ -340,7 +337,7 @@ main (int   argc,
    conduction_client = mongoc_client_new (conduction_uri);
 
    if (!conduction_client) {
-      fprintf (stderr, "Failed to parse URI.\n");
+      MONGOC_ERROR ("Failed to parse URI.\n");
       return EXIT_FAILURE;
    }
 
@@ -357,11 +354,11 @@ main (int   argc,
    }
 
    if (!(mongodb_uri = topology_test_get_mongodb_uri (&init_config_reply))) {
-      fprintf (stderr, "Couldn't find mongodb_uri in Conduction reply\n");
+      MONGOC_ERROR ("Couldn't find mongodb_uri in Conduction reply\n");
       return EXIT_FAILURE;
    }
 
-   printf ("mongodb_uri: %s\n", mongodb_uri);
+   MONGOC_INFO ("mongodb_uri: %s\n", mongodb_uri);
    client = mongoc_client_new (mongodb_uri);
 
    /* TODO: read and execute phases */
