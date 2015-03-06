@@ -288,29 +288,23 @@ topology_test_orchestration_operation (mongoc_database_t *conduction,
    bson_iter_t iter;
    const char *method = bson_utf8_value_case (test_spec, "method");
    const char *uri = bson_utf8_value_case (test_spec, "uri");
-   bson_t payload_src;
-   bson_t payload_dst;
+   bson_t payload;
+   bson_t body;
    bson_t command;
    bson_t reply;
 
    if (!(method && uri &&
          bson_iter_init_find_case (&iter, test_spec, "payload") &&
-         bson_iter_bson (&iter, &payload_src))) {
+         bson_iter_bson (&iter, &payload))) {
       MONGOC_ERROR ("couldn't parse MOOperation spec");
       goto fail;
    }
 
    bson_init (&command);
-
    if (!(bson_append_utf8 (&command, method, -1, uri, -1) &&
-         bson_append_document_begin (&command, "payload", -1, &payload_dst))) {
-      MONGOC_ERROR ("couldn't encode MOOperation payload");
-      goto fail;
-   }
-
-   bson_copy_to (&payload_src, &payload_dst);
-
-   if (!bson_append_document_end (&command, &payload_dst)) {
+         bson_append_document_begin (&command, "body", -1, &body) &&
+         bson_concat (&body, &payload) &&
+         bson_append_document_end (&command, &body))) {
       MONGOC_ERROR ("couldn't encode MOOperation payload");
       goto fail;
    }
