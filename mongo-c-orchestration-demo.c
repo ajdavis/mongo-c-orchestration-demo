@@ -281,9 +281,9 @@ fail:
 }
 
 bool
-topology_test_client_operation (mongoc_database_t *conduction,
-                                mongoc_client_t   *client,
-                                bson_t            *test_spec)
+topology_test_orchestration_operation (mongoc_database_t *conduction,
+                                       mongoc_client_t   *client,
+                                       bson_t            *test_spec)
 {
    bson_iter_t iter;
    const char *method = bson_utf8_value_case (test_spec, "method");
@@ -296,7 +296,7 @@ topology_test_client_operation (mongoc_database_t *conduction,
    if (!(method && uri &&
          bson_iter_init_find_case (&iter, test_spec, "payload") &&
          bson_iter_bson (&iter, &payload_src))) {
-      MONGOC_ERROR ("couldn't parse clientOperation spec");
+      MONGOC_ERROR ("couldn't parse MOOperation spec");
       goto fail;
    }
 
@@ -304,14 +304,14 @@ topology_test_client_operation (mongoc_database_t *conduction,
 
    if (!(bson_append_utf8 (&command, method, -1, uri, -1) &&
          bson_append_document_begin (&command, "payload", -1, &payload_dst))) {
-      MONGOC_ERROR ("couldn't encode clientOperation payload");
+      MONGOC_ERROR ("couldn't encode MOOperation payload");
       goto fail;
    }
 
    bson_copy_to (&payload_src, &payload_dst);
 
    if (!bson_append_document_end (&command, &payload_dst)) {
-      MONGOC_ERROR ("couldn't encode clientOperation payload");
+      MONGOC_ERROR ("couldn't encode MOOperation payload");
       goto fail;
    }
 
@@ -329,9 +329,9 @@ fail:
 }
 
 bool
-topology_test_orchestration_operation (mongoc_database_t *conduction,
-                                       mongoc_client_t   *client,
-                                       bson_t            *test_spec)
+topology_test_client_operation (mongoc_database_t *conduction,
+                                mongoc_client_t   *client,
+                                bson_t            *test_spec)
 {
    return true;
 }
@@ -381,7 +381,7 @@ topology_test_phases (mongoc_database_t *conduction,
       }
 
       if (!bson_iter_next (&phase)) {
-         MONGOC_ERROR("empty phase");
+         MONGOC_ERROR ("empty phase");
          goto fail;
       }
 
