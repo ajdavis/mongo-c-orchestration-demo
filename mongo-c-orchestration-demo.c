@@ -7,6 +7,31 @@ const char *USAGE =
    "Connect to a running Conduction server and run the tests in TEST.JSON.\n"
    "See http://mongo-conduction.readthedocs.org/\n";
 
+/* TODO: libbson needs a convenience method? */
+bool
+bson_iter_bson (const bson_iter_t *iter,
+                bson_t            *child)
+{
+   uint32_t document_len;
+   const uint8_t *document_buf;
+
+   bson_iter_document (iter, &document_len, &document_buf);
+   return bson_init_static (child, document_buf, document_len);
+}
+
+const char *
+bson_utf8_value_case (const bson_t *bson,
+                      const char   *key)
+{
+   bson_iter_t iter;
+
+   if (!(bson_iter_init_find_case (&iter, bson, key) &&
+         BSON_ITER_HOLDS_UTF8 (&iter))) {
+      return NULL;
+   }
+
+   return bson_iter_utf8 (&iter, NULL);
+}
 
 bool
 run_command (mongoc_database_t *conduction,
@@ -20,6 +45,8 @@ run_command (mongoc_database_t *conduction,
    str = bson_as_json (command, NULL);
    MONGOC_INFO ("%s -->", str);
    bson_free (str);
+
+   /* TODO: still not rendering error properly */
    if (!mongoc_database_command_simple (conduction, command, NULL, reply,
                                         &error)) {
       MONGOC_ERROR ("Conduction command failure: %s", error.message);
@@ -118,17 +145,15 @@ topology_test_print_info (bson_t *test_spec)
    const char *str;
    bson_iter_t iter;
 
-   if (!(bson_iter_init_find_case (&iter, test_spec, "description") &&
-         BSON_ITER_HOLDS_UTF8 (&iter) &&
-         (str = bson_iter_utf8 (&iter, NULL)))) {
+   if (!(str = bson_utf8_value_case (test_spec, "description"))) {
+      MONGOC_ERROR ("no description");
       goto fail;
    }
 
    MONGOC_INFO ("description: %s", str);
 
-   if (!(bson_iter_init_find_case (&iter, test_spec, "type") &&
-         BSON_ITER_HOLDS_UTF8 (&iter) &&
-         (str = bson_iter_utf8 (&iter, NULL)))) {
+   if (!(str = bson_utf8_value_case (test_spec, "type"))) {
+      MONGOC_ERROR ("no test type");
       goto fail;
    }
 
@@ -158,9 +183,7 @@ deployment_uri (const bson_t *test_spec,
    size_t path_length;
    char *path = NULL;
 
-   if (!(bson_iter_init_find_case (&iter, test_spec, "type") &&
-         BSON_ITER_HOLDS_UTF8 (&iter) &&
-         (type_str = bson_iter_utf8 (&iter, NULL)))) {
+   if (!(type_str = bson_utf8_value_case (test_spec, "type"))) {
       MONGOC_ERROR ("missing \"type\"");
       goto fail;
    }
@@ -179,6 +202,7 @@ deployment_uri (const bson_t *test_spec,
    if (include_deployment_id) {
       bson_iter_init (&iter, test_spec);
 
+      /* TODO: need find_descendent_case? */
       if (!(bson_iter_find_descendant (&iter, "initConfig.id",
                                        &deployment_iter) &&
             BSON_ITER_HOLDS_UTF8 (&deployment_iter) &&
@@ -257,6 +281,146 @@ fail:
 }
 
 bool
+topology_test_client_operation (mongoc_database_t *conduction,
+                                mongoc_client_t   *client,
+                                bson_t            *test_spec)
+{
+   bson_iter_t iter;
+   const char *method = bson_utf8_value_case (test_spec, "method");
+   const char *uri = bson_utf8_value_case (test_spec, "uri");
+   bson_t payload_src;
+   bson_t payload_dst;
+   bson_t command;
+   bson_t reply;
+
+   if (!(method && uri &&
+         bson_iter_init_find_case (&iter, test_spec, "payload") &&
+         bson_iter_bson (&iter, &payload_src))) {
+      MONGOC_ERROR ("couldn't parse clientOperation spec");
+      goto fail;
+   }
+
+   bson_init (&command);
+
+   if (!(bson_append_utf8 (&command, method, -1, uri, -1) &&
+         bson_append_document_begin (&command, "payload", -1, &payload_dst))) {
+      MONGOC_ERROR ("couldn't encode clientOperation payload");
+      goto fail;
+   }
+
+   bson_copy_to (&payload_src, &payload_dst);
+
+   if (!bson_append_document_end (&command, &payload_dst)) {
+      MONGOC_ERROR ("couldn't encode clientOperation payload");
+      goto fail;
+   }
+
+   if (!run_command (conduction, &command, &reply)) {
+      goto fail;
+   }
+
+   bson_destroy (&command);
+   bson_destroy (&reply);
+   return true;
+fail:
+   bson_destroy (&command);
+   bson_destroy (&reply);
+   return false;
+}
+
+bool
+topology_test_orchestration_operation (mongoc_database_t *conduction,
+                                       mongoc_client_t   *client,
+                                       bson_t            *test_spec)
+{
+   return true;
+}
+
+bool
+topology_test_phases (mongoc_database_t *conduction,
+                      mongoc_client_t   *client,
+                      bson_t            *test_spec)
+{
+   bson_iter_t iter;
+   bson_iter_t phases;
+
+   if (!(bson_iter_init_find_case (&iter, test_spec, "phases") &&
+         BSON_ITER_HOLDS_ARRAY (&iter) &&
+         bson_iter_recurse (&iter, &phases))) {
+      goto fail;
+   }
+
+   while (bson_iter_next (&phases)) {
+      /* Phases are like:
+       * {
+       *     "clientOperation": {
+       *         "operation": "findOne",
+       *         "outcome": { "ok": 0 }
+       *     }
+       * },
+       * {
+       *     "MOOperation": {
+       *         "method": "POST",
+       *         "payload": { "action": "restart" },
+       *         "uri": "/servers/mongosA"
+       *     }
+       * }
+       *
+       * "MOOperation" is a Mongo Orchestration operation.
+       *
+       */
+      bson_iter_t phase;
+      bson_t phase_spec;
+      bool (*phase_callback)(mongoc_database_t *,
+                             mongoc_client_t   *,
+                             bson_t            *);
+
+      if (!(BSON_ITER_HOLDS_DOCUMENT (&phases) &&
+            bson_iter_recurse (&phases, &phase))) {
+         goto fail;
+      }
+
+      if (!bson_iter_next (&phase)) {
+         MONGOC_ERROR("empty phase");
+         goto fail;
+      }
+
+      if (!strcasecmp (bson_iter_key (&phase), "clientOperation")) {
+         phase_callback = topology_test_client_operation;
+      } else if (!strcasecmp (bson_iter_key (&phase), "MOOperation")) {
+         phase_callback = topology_test_orchestration_operation;
+      } else {
+         MONGOC_ERROR (
+            "couldn't find clientOperation or MOOperation in phase");
+         goto fail;
+      }
+
+      if (!(BSON_ITER_HOLDS_DOCUMENT (&phase) &&
+            bson_iter_bson (&phase, &phase_spec))) {
+         MONGOC_ERROR ("couldn't parse clientOperation or MOOperation");
+         goto fail;
+      }
+
+      if (!phase_callback (conduction, client, &phase_spec)) {
+         goto fail;
+      }
+
+      return true;
+   }
+
+fail:
+   return false;
+}
+
+bool
+topology_test_test (mongoc_database_t *conduction,
+                    mongoc_client_t   *client,
+                    bson_t            *test_spec)
+{
+   return true;
+}
+
+bool
 topology_test_destroy_config (mongoc_database_t *conduction,
                               bson_t            *test_spec)
 {
@@ -282,23 +446,6 @@ fail:
    bson_destroy (&command);
    free (path);
    return false;
-}
-
-const char *
-topology_test_get_mongodb_uri (bson_t *config_reply)
-{
-   bson_iter_t iter;
-
-   if (!bson_iter_init_find_case (&iter, config_reply, "mongodb_uri")) {
-      MONGOC_ERROR("no mongodb uri in response");
-      return NULL;
-   }
-
-   if (BSON_ITER_HOLDS_UTF8 (&iter)) {
-      return bson_iter_utf8 (&iter, NULL);
-   }
-
-   return NULL;
 }
 
 int
@@ -347,7 +494,8 @@ main (int   argc,
       return EXIT_FAILURE;
    }
 
-   if (!(mongodb_uri = topology_test_get_mongodb_uri (&init_config_reply))) {
+   if (!(mongodb_uri =
+            bson_utf8_value_case (&init_config_reply, "mongodb_uri"))) {
       MONGOC_ERROR ("Couldn't find mongodb_uri in Conduction reply");
       return EXIT_FAILURE;
    }
@@ -355,11 +503,10 @@ main (int   argc,
    MONGOC_INFO ("mongodb_uri: %s", mongodb_uri);
    client = mongoc_client_new (mongodb_uri);
 
-   /* TODO: read and execute phases */
-   json_command (conduction,
-                 "{ method: \"POST\", "
-                 "uri: \"/servers/mongosA\", "
-                 "payload: { action: \"stop\" }");
+   if (!(topology_test_phases (conduction, client, &test_spec) &&
+         topology_test_test (conduction, client, &test_spec))) {
+      return EXIT_FAILURE;
+   }
 
    collection = mongoc_client_get_collection (client, "test", "test");
    mongoc_collection_destroy (collection);
