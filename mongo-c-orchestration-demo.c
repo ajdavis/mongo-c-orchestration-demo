@@ -280,9 +280,9 @@ fail:
 }
 
 bool
-topology_test_orchestration_operation (mongoc_database_t *conduction,
-                                       mongoc_client_t   *client,
-                                       bson_t            *test_spec)
+topology_test_orchestration_operation (mongoc_database_t   *conduction,
+                                       mongoc_collection_t *collection,
+                                       bson_t              *test_spec)
 {
    bson_iter_t iter;
    const char *method = bson_utf8_value_case (test_spec, "method");
@@ -323,11 +323,66 @@ fail:
 }
 
 bool
-topology_test_client_operation (mongoc_database_t *conduction,
-                                mongoc_client_t   *client,
-                                bson_t            *test_spec)
+topology_test_client_operation (mongoc_database_t   *conduction,
+                                mongoc_collection_t *collection,
+                                bson_t              *test_spec)
 {
-   return true;
+   const char *operation = bson_utf8_value_case (test_spec, "operation");
+   int ok = -1;
+   bson_iter_t iter;
+   bson_iter_t outcome_iter;
+   const bson_t *doc;
+   mongoc_cursor_t *cursor = NULL;
+   bson_error_t error;
+   bson_t query;
+   bool result = true;
+
+   bson_init (&query);
+
+   bson_iter_init (&iter, test_spec);
+
+   if (bson_iter_find_descendant (&iter, "outcome.ok",
+                                  &outcome_iter)) {
+      ok = bson_iter_int32 (&outcome_iter);
+   }
+
+   if (!strcasecmp (operation, "findOne")) {
+      cursor = mongoc_collection_find (collection,
+                                       MONGOC_QUERY_NONE,
+                                       0,
+                                       0,
+                                       0,
+                                       &query,
+                                       NULL,
+                                       NULL);
+
+      while (mongoc_cursor_next (cursor, &doc)) {
+      }
+
+      if (mongoc_cursor_error (cursor, &error)) {
+         MONGOC_ERROR ("Cursor failure: %s", error.message);
+
+         if (ok == 1) {
+            /* We expected success. */
+            result = false;
+         }
+      } else if (ok == 0) {
+         /* We expected failure. */
+         MONGOC_ERROR ("Expected cursor failure but got none");
+         result = false;
+      }
+   } else {
+      MONGOC_ERROR ("Unknown operation %s", operation);
+      result = false;
+   }
+
+   bson_destroy (&query);
+
+   if (cursor) {
+      mongoc_cursor_destroy (cursor);
+   }
+
+   return result;
 }
 
 bool
@@ -337,6 +392,9 @@ topology_test_phases (mongoc_database_t *conduction,
 {
    bson_iter_t iter;
    bson_iter_t phases;
+   mongoc_collection_t *collection = mongoc_client_get_collection (client,
+                                                                   "test",
+                                                                   "test");
 
    if (!(bson_iter_init_find_case (&iter, test_spec, "phases") &&
          BSON_ITER_HOLDS_ARRAY (&iter) &&
@@ -365,9 +423,9 @@ topology_test_phases (mongoc_database_t *conduction,
        */
       bson_iter_t phase;
       bson_t phase_spec;
-      bool (*phase_callback)(mongoc_database_t *,
-                             mongoc_client_t   *,
-                             bson_t            *);
+      bool (*phase_callback)(mongoc_database_t   *,
+                             mongoc_collection_t *,
+                             bson_t              *);
 
       if (!(BSON_ITER_HOLDS_DOCUMENT (&phases) &&
             bson_iter_recurse (&phases, &phase))) {
@@ -395,16 +453,16 @@ topology_test_phases (mongoc_database_t *conduction,
          goto fail;
       }
 
-
-
-      if (!phase_callback (conduction, client, &phase_spec)) {
+      if (!phase_callback (conduction, collection, &phase_spec)) {
          goto fail;
       }
    }
 
+   mongoc_collection_destroy (collection);
    return true;
 
 fail:
+   mongoc_collection_destroy (collection);
    return false;
 }
 
@@ -456,7 +514,6 @@ main (int   argc,
    bson_t init_config_reply;
    const char *mongodb_uri = NULL;
    mongoc_client_t *client = NULL;
-   mongoc_collection_t *collection = NULL;
 
    mongoc_init ();
 
@@ -504,8 +561,6 @@ main (int   argc,
       return EXIT_FAILURE;
    }
 
-   collection = mongoc_client_get_collection (client, "test", "test");
-   mongoc_collection_destroy (collection);
    mongoc_client_destroy (client);
 
    if (!topology_test_destroy_config (conduction, &test_spec)) {
