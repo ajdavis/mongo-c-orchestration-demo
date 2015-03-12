@@ -33,18 +33,26 @@ bson_utf8_value_case (const bson_t *bson,
    return bson_iter_utf8 (&iter, NULL);
 }
 
+const char*
+bson_static_json (bson_t *bson)
+{
+   static char* str = NULL;
+   if (str) {
+      bson_free (str);
+   }
+
+   return (str = bson_as_json (bson, NULL));
+}
+
 bool
 run_command (mongoc_database_t *conduction,
              bson_t            *command,
              bson_t            *reply)
 {
    bson_error_t error;
-   char *str = NULL;
    bool result = true;
 
-   str = bson_as_json (command, NULL);
-   MONGOC_INFO ("%s -->", str);
-   bson_free (str);
+   MONGOC_INFO ("%s -->", bson_static_json (command));
 
    /* TODO: still not rendering error properly */
    if (!mongoc_database_command_simple (conduction, command, NULL, reply,
@@ -53,10 +61,7 @@ run_command (mongoc_database_t *conduction,
       result = false;
    }
 
-   str = bson_as_json (reply, NULL);
-   MONGOC_INFO ("\t<-- %s", str);
-   bson_free (str);
-
+   MONGOC_INFO ("\t<-- %s", bson_static_json (reply));
    return result;
 }
 
@@ -67,29 +72,22 @@ json_command (mongoc_database_t *database,
    bson_t command;
    bson_t reply;
    bson_error_t error;
-   char *str;
+
+   MONGOC_INFO ("%s -->", json);
 
    if (!bson_init_from_json (&command, json, -1, &error)) {
       MONGOC_ERROR ("JSON parse error: %s", error.message);
       return false;
    }
 
-   str = bson_as_json (&command, NULL);
-   MONGOC_INFO ("%s -->", str);
-
-   /* TODO: factor with run_command */
    bson_init (&reply);
-
    if (!mongoc_database_command_simple (database, &command, NULL, &reply,
                                         &error)) {
       MONGOC_ERROR ("Command failure: %s", error.message);
       return EXIT_FAILURE;
    }
 
-   bson_free (str);
-   str = bson_as_json (&reply, NULL);
-   MONGOC_INFO ("\t<-- %s", str);
-   bson_free (str);
+   MONGOC_INFO ("\t<-- %s", bson_static_json (&reply));
    bson_destroy (&command);
    bson_destroy (&reply);
    return true;
@@ -143,8 +141,6 @@ bool
 topology_test_print_info (bson_t *test_spec)
 {
    const char *str;
-   bson_iter_t iter;
-
    if (!(str = bson_utf8_value_case (test_spec, "description"))) {
       MONGOC_ERROR ("no description");
       goto fail;
@@ -395,12 +391,14 @@ topology_test_phases (mongoc_database_t *conduction,
          goto fail;
       }
 
+
+
       if (!phase_callback (conduction, client, &phase_spec)) {
          goto fail;
       }
-
-      return true;
    }
+
+   return true;
 
 fail:
    return false;
