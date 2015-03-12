@@ -33,15 +33,16 @@ bson_utf8_value_case (const bson_t *bson,
    return bson_iter_utf8 (&iter, NULL);
 }
 
-const char*
+const char *
 bson_static_json (bson_t *bson)
 {
-   static char* str = NULL;
+   static char *str = NULL;
+
    if (str) {
       bson_free (str);
    }
 
-   return (str = bson_as_json (bson, NULL));
+   return str = bson_as_json (bson, NULL);
 }
 
 bool
@@ -81,6 +82,7 @@ json_command (mongoc_database_t *database,
    }
 
    bson_init (&reply);
+
    if (!mongoc_database_command_simple (database, &command, NULL, &reply,
                                         &error)) {
       MONGOC_ERROR ("Command failure: %s", error.message);
@@ -141,6 +143,7 @@ bool
 topology_test_print_info (bson_t *test_spec)
 {
    const char *str;
+
    if (!(str = bson_utf8_value_case (test_spec, "description"))) {
       MONGOC_ERROR ("no description");
       goto fail;
@@ -297,6 +300,7 @@ topology_test_orchestration_operation (mongoc_database_t *conduction,
    }
 
    bson_init (&command);
+
    if (!(bson_append_utf8 (&command, method, -1, uri, -1) &&
          bson_append_document_begin (&command, "body", -1, &body) &&
          bson_concat (&body, &payload) &&
